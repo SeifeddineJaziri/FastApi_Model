@@ -1,16 +1,42 @@
+import os
 import io
 import base64
+import requests
 import PIL.Image
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 
+# Google Drive Model URL (Replace with your actual file ID)
+MODEL_URL = "https://drive.google.com/uc?id=1ZSjvc6tbWX4rrnPjLI4HaWuez5aM7lCx"
+MODEL_PATH = "CoffeeEye.pt"
 
-model = "CoffeeEye.pt"
-model = YOLO(model)
+def download_model():
+    """Download the YOLO model if it's not available locally."""
+    if not os.path.exists(MODEL_PATH):
+        print("Downloading model...")
+        response = requests.get(MODEL_URL, allow_redirects=True)
+        if response.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                f.write(response.content)
+            print("Model downloaded successfully!")
+        else:
+            print("Failed to download the model. Please check the link.")
 
+# Ensure the model is downloaded before loading YOLO
+download_model()
+
+# Load YOLO model if available
+if os.path.exists(MODEL_PATH):
+    model = YOLO(MODEL_PATH)
+else:
+    model = None
+    print("Warning: Model not found! API will not work correctly.")
+
+# Initialize FastAPI
 app = FastAPI()
 
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  
@@ -21,23 +47,28 @@ app.add_middleware(
 
 @app.get("/")
 def home():
+    """Root endpoint to check API status."""
     return {"message": "FastAPI is running with YOLO!"}
 
-
 def image_to_base64(image: PIL.Image.Image) -> str:
+    """Convert PIL image to base64-encoded string."""
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-
-
-
 @app.post("/predict-image/")
 async def predict_image(file: UploadFile = File(...)):
+    """Process an uploaded image and return YOLO predictions."""
+    if model is None:
+        return {"error": "Model not found. Prediction is not possible."}
+
+    # Read image and convert to PIL format
     contents = await file.read()
     pil_image = PIL.Image.open(io.BytesIO(contents))
+
+    # Run YOLO model for predictions
     results = model.predict(pil_image)
-    
+
     if results and len(results) > 0 and results[0].boxes is not None:
         result_image_array = results[0].plot()  
         result_pil_image = PIL.Image.fromarray(result_image_array)
