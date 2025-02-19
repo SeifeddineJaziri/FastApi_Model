@@ -15,23 +15,31 @@ def download_model():
     """Download the YOLO model if it's not available locally."""
     if not os.path.exists(MODEL_PATH):
         print("Downloading model...")
-        response = requests.get(MODEL_URL, allow_redirects=True)
-        if response.status_code == 200:
-            with open(MODEL_PATH, "wb") as f:
-                f.write(response.content)
-            print("Model downloaded successfully!")
-        else:
-            print("Failed to download the model. Please check the link.")
+        try:
+            response = requests.get(MODEL_URL, allow_redirects=True)
+            if response.status_code == 200:
+                with open(MODEL_PATH, "wb") as f:
+                    f.write(response.content)
+                print("Model downloaded successfully!")
+            else:
+                print(f"Failed to download the model. Status code: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading the model: {e}")
 
 # Ensure the model is downloaded before loading YOLO
 download_model()
 
 # Load YOLO model if available
-if os.path.exists(MODEL_PATH):
-    model = YOLO(MODEL_PATH)
-else:
+try:
+    if os.path.exists(MODEL_PATH):
+        model = YOLO(MODEL_PATH)
+        print("Model loaded successfully!")
+    else:
+        model = None
+        print("Warning: Model not found! API will not work correctly.")
+except Exception as e:
     model = None
-    print("Warning: Model not found! API will not work correctly.")
+    print(f"Error loading the model: {e}")
 
 # Initialize FastAPI
 app = FastAPI()
@@ -62,24 +70,28 @@ async def predict_image(file: UploadFile = File(...)):
     if model is None:
         return {"error": "Model not found. Prediction is not possible."}
 
-    # Read image and convert to PIL format
-    contents = await file.read()
-    pil_image = PIL.Image.open(io.BytesIO(contents))
+    try:
+        # Read image and convert to PIL format
+        contents = await file.read()
+        pil_image = PIL.Image.open(io.BytesIO(contents))
 
-    # Run YOLO model for predictions
-    results = model.predict(pil_image)
+        # Run YOLO model for predictions
+        results = model.predict(pil_image)
 
-    if results and len(results) > 0 and results[0].boxes is not None:
-        result_image_array = results[0].plot()  
-        result_pil_image = PIL.Image.fromarray(result_image_array)
-        result_image_base64 = image_to_base64(result_pil_image)
+        if results and len(results) > 0 and results[0].boxes is not None:
+            result_image_array = results[0].plot()  
+            result_pil_image = PIL.Image.fromarray(result_image_array)
+            result_image_base64 = image_to_base64(result_pil_image)
+            
+            predictions = [
+                f"{model.names[int(box.cls.item())]}: {box.conf.item():.2f}"
+                for box in results[0].boxes
+            ] if results[0].boxes else ["No predictions"]
+        else:
+            result_image_base64 = image_to_base64(pil_image)
+            predictions = ["No predictions"]
         
-        predictions = [
-            f"{model.names[int(box.cls.item())]}: {box.conf.item():.2f}"
-            for box in results[0].boxes
-        ] if results[0].boxes else ["No predictions"]
-    else:
-        result_image_base64 = image_to_base64(pil_image)
-        predictions = ["No predictions"]
-    
-    return {"prediction": predictions, "image": result_image_base64}
+        return {"prediction": predictions, "image": result_image_base64}
+
+    except Exception as e:
+        return {"error": f"An error occurred during prediction: {str(e)}"}
