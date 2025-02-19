@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 
 # Google Drive Model URL (Replace with your actual file ID)
-MODEL_URL = "https://drive.google.com/uc?id=1ZSjvc6tbWX4rrnPjLI4HaWuez5aM7lCx"
+MODEL_URL = "https://drive.google.com/uc?export=download&id=1ZSjvc6tbWX4rrnPjLI4HaWuez5aM7lCx"
 MODEL_PATH = "CoffeeEye.pt"
 
 def download_model():
