@@ -6,45 +6,34 @@ import PIL.Image
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
+import tempfile
+import cv2
+import numpy as np
+from collections import Counter
 
-# Google Drive Model URL (Replace with your actual file ID)
-MODEL_URL = "https://drive.google.com/uc?export=download&id=1ZSjvc6tbWX4rrnPjLI4HaWuez5aM7lCx"
+MODEL_URL = "https://drive.google.com/uc?export=download&id=1rX3jxyr-URjFhOF_b7MBjmOfBrkteYsP"
 MODEL_PATH = "CoffeeEye.pt"
 
 def download_model():
-    """Download the YOLO model if it's not available locally."""
     if not os.path.exists(MODEL_PATH):
         print("Downloading model...")
-        try:
-            response = requests.get(MODEL_URL, allow_redirects=True)
-            if response.status_code == 200:
-                with open(MODEL_PATH, "wb") as f:
-                    f.write(response.content)
-                print("Model downloaded successfully!")
-            else:
-                print(f"Failed to download the model. Status code: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error downloading the model: {e}")
+        response = requests.get(MODEL_URL, allow_redirects=True)
+        if response.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                f.write(response.content)
+            print("Model downloaded successfully!")
+        else:
+            print("Failed to download the model. Please check the link.")
 
-# Ensure the model is downloaded before loading YOLO
 download_model()
 
-# Load YOLO model if available
-try:
-    if os.path.exists(MODEL_PATH):
-        model = YOLO(MODEL_PATH)
-        print("Model loaded successfully!")
-    else:
-        model = None
-        print("Warning: Model not found! API will not work correctly.")
-except Exception as e:
+if os.path.exists(MODEL_PATH):
+    model = YOLO(MODEL_PATH)
+else:
     model = None
-    print(f"Error loading the model: {e}")
-
-# Initialize FastAPI
+    
 app = FastAPI()
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  
@@ -55,43 +44,164 @@ app.add_middleware(
 
 @app.get("/")
 def home():
-    """Root endpoint to check API status."""
     return {"message": "FastAPI is running with YOLO!"}
 
 def image_to_base64(image: PIL.Image.Image) -> str:
-    """Convert PIL image to base64-encoded string."""
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 @app.post("/predict-image/")
 async def predict_image(file: UploadFile = File(...)):
-    """Process an uploaded image and return YOLO predictions."""
+    if model is None:
+        return {"error": "Model not found. Prediction is not possible."}
+
+    contents = await file.read()
+    pil_image = PIL.Image.open(io.BytesIO(contents))
+
+    results = model.predict(pil_image)
+
+    price_mapping = {
+        "espresso": 1.5,
+        "cappucino": 1.8,
+        "croissant": 1.5,
+        "jus orange": 3.0,
+        "fanta": 2.0,
+        "coca": 2.0 , 
+        "citronade": 3.0
+    }
+
+    total_price = 0.0
+    best_accuracy = 0.0
+
+    if results and len(results) > 0 and results[0].boxes is not None:
+        result_image_array = results[0].plot()  
+        result_pil_image = PIL.Image.fromarray(result_image_array)
+        result_image_base64 = image_to_base64(result_pil_image)
+        
+        predictions = []
+        for box in results[0].boxes:
+            class_id = int(box.cls.item())
+            class_name = model.names[class_id]
+            confidence = box.conf.item()
+            price = price_mapping.get(class_name, 0.0)
+            total_price += price
+            best_accuracy = max(best_accuracy, confidence)
+            predictions.append(f"{class_name}: {confidence:.2f}, Price: {price:.3f} DT")
+
+        if not predictions:
+            predictions = ["No predictions"]
+    else:
+        result_image_base64 = image_to_base64(pil_image)
+        predictions = ["No predictions"]
+
+    return {
+        "prediction": predictions,
+        "image": result_image_base64,
+        "total_price": f"{total_price:.3f} DT",
+        "accuracy": f"{best_accuracy:.2%}"
+    }
+
+@app.post("/predict-video/")
+async def predict_video(file: UploadFile = File(...)):
     if model is None:
         return {"error": "Model not found. Prediction is not possible."}
 
     try:
-        # Read image and convert to PIL format
-        contents = await file.read()
-        pil_image = PIL.Image.open(io.BytesIO(contents))
-
-        # Run YOLO model for predictions
-        results = model.predict(pil_image)
-
-        if results and len(results) > 0 and results[0].boxes is not None:
-            result_image_array = results[0].plot()  
-            result_pil_image = PIL.Image.fromarray(result_image_array)
-            result_image_base64 = image_to_base64(result_pil_image)
-            
-            predictions = [
-                f"{model.names[int(box.cls.item())]}: {box.conf.item():.2f}"
-                for box in results[0].boxes
-            ] if results[0].boxes else ["No predictions"]
-        else:
-            result_image_base64 = image_to_base64(pil_image)
-            predictions = ["No predictions"]
+        price_mapping = {
+            "espresso": 1.5,
+            "cappucino": 1.8,
+            "croissant": 1.5,
+            "jus orange": 3.0,
+            "fanta": 2.0,
+            "coca": 2.0 , 
+            "citronade": 3.0
+        }
         
-        return {"prediction": predictions, "image": result_image_base64}
+        contents = await file.read()
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        temp_file.write(contents)
+        temp_file.close()
+
+        # Open video with cv2
+        cap = cv2.VideoCapture(temp_file.name)
+        if not cap.isOpened():
+            return {"error": "Could not open video file"}
+
+        # Store frame predictions to find most common pattern
+        frame_patterns = []
+        frame_data = []  # Store frame and its predictions
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_pil = PIL.Image.fromarray(frame_rgb)
+            results = model.predict(frame_pil)
+
+            if results and len(results) > 0 and results[0].boxes is not None:
+                # Create a pattern string from detections
+                detections = []
+                for box in results[0].boxes:
+                    class_id = int(box.cls.item())
+                    class_name = model.names[class_id]
+                    confidence = box.conf.item()
+                    detections.append(f"{class_name}")
+                
+                # Sort detections to ensure consistent pattern matching
+                pattern = ",".join(sorted(detections))
+                frame_patterns.append(pattern)
+                frame_data.append((frame_rgb, results[0], pattern))
+
+        if not frame_patterns:
+            return {"error": "No detections found in video"}
+
+        # Find most common pattern
+        most_common_pattern = Counter(frame_patterns).most_common(1)[0][0]
+
+        # Get frame data with the most common pattern
+        matching_frames = [(frame, results) for frame, results, pattern in frame_data if pattern == most_common_pattern]
+        
+        # Find the frame with highest confidence among matching frames
+        best_frame = None
+        best_results = None
+        best_confidence = 0.0
+
+        for frame, results in matching_frames:
+            frame_confidence = max(box.conf.item() for box in results.boxes)
+            if frame_confidence > best_confidence:
+                best_confidence = frame_confidence
+                best_frame = frame
+                best_results = results
+
+        # Process best frame
+        predictions = []
+        total_price = 0.0
+
+        result_frame = best_results.plot()
+        result_pil = PIL.Image.fromarray(result_frame)
+        result_base64 = image_to_base64(result_pil)
+
+        for box in best_results.boxes:
+            class_id = int(box.cls.item())
+            class_name = model.names[class_id]
+            confidence = box.conf.item()
+            price = price_mapping.get(class_name, 0.0)
+            total_price += price
+            predictions.append(f"{class_name}: {confidence:.2f}, Price: {price:.3f} DT")
+
+        cap.release()
+        os.unlink(temp_file.name)
+
+        return {
+            "prediction": predictions,
+            "image": result_base64,
+            "total_price": f"{total_price:.3f} DT",
+            "accuracy": f"{best_confidence:.2%}",
+            "pattern_frequency": Counter(frame_patterns)[most_common_pattern]
+        }
 
     except Exception as e:
-        return {"error": f"An error occurred during prediction: {str(e)}"}
+        return {"error": f"Error processing video: {str(e)}"}
